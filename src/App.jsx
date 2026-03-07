@@ -25,29 +25,48 @@ const CITIES = [
   for teams that play in that city, even if TM didn't list them.
 */
 const CITY_TEAMS = {
-  "Los Angeles": ["los angeles", "la ", "los angeles lakers", "la clippers", "la rams", "la chargers", "la kings", "anaheim ducks", "la angels", "los angeles dodgers", "la galaxy", "lafc", "la sparks", "ucla", "usc", "loyola marymount", "pepperdine", "cal state"],
-  "New York": ["new york", "brooklyn", "brooklyn nets", "new york knicks", "new york rangers", "new york islanders", "new york yankees", "new york mets", "ny giants", "ny jets", "nycfc", "new york red bulls", "new york liberty", "st. john"],
-  "Chicago": ["chicago", "chicago bulls", "chicago blackhawks", "chicago bears", "chicago cubs", "chicago white sox", "chicago fire", "chicago sky", "northwestern", "depaul", "loyola chicago"],
-  "Dallas": ["dallas", "dallas mavericks", "dallas stars", "dallas cowboys", "fc dallas", "dallas wings", "smu", "tcu", "unt", "north texas"],
-  "San Francisco": ["san francisco", "golden state", "golden state warriors", "san francisco 49ers", "sf giants", "oakland", "san jose", "san jose earthquakes", "stanford", "cal bears", "santa clara", "bay area"],
-  "Boston": ["boston", "boston celtics", "boston bruins", "boston red sox", "new england patriots", "new england revolution", "new england", "boston college", "northeastern", "harvard"],
-  "Miami": ["miami", "miami heat", "miami dolphins", "florida panthers", "miami marlins", "inter miami", "fiu", "miami hurricanes"],
-  "Houston": ["houston", "houston rockets", "houston texans", "houston astros", "houston dynamo", "houston dash", "rice", "houston cougars"],
-  "Philadelphia": ["philadelphia", "philadelphia 76ers", "philadelphia sixers", "philadelphia flyers", "philadelphia eagles", "philadelphia phillies", "philadelphia union", "villanova", "temple", "drexel", "la salle"],
-  "Atlanta": ["atlanta", "atlanta hawks", "atlanta falcons", "atlanta braves", "atlanta united", "atlanta dream", "georgia tech", "georgia state", "kennesaw"],
+  "Los Angeles": ["los angeles", "la ", "los angeles lakers", "la clippers", "la rams", "la chargers", "la kings", "anaheim ducks", "la angels", "los angeles dodgers", "la galaxy", "lafc", "la sparks", "angel city", "south bay lakers", "ontario clippers", "ucla", "usc", "loyola marymount", "pepperdine", "cal state northridge", "cal state fullerton", "cal state bakersfield", "long beach state", "csun", "lmu"],
+  "New York": ["new york", "brooklyn", "brooklyn nets", "new york knicks", "new york rangers", "new york islanders", "new york yankees", "new york mets", "ny giants", "ny jets", "nycfc", "new york red bulls", "new york liberty", "gotham fc", "westchester knicks", "long island nets", "st. john", "seton hall", "fordham", "iona", "manhattan", "wagner", "marist"],
+  "Chicago": ["chicago", "chicago bulls", "chicago blackhawks", "chicago bears", "chicago cubs", "chicago white sox", "chicago fire", "chicago sky", "chicago stars", "windy city bulls", "northwestern", "depaul", "loyola chicago", "uic", "illinois chicago"],
+  "Dallas": ["dallas", "dallas mavericks", "dallas stars", "dallas cowboys", "fc dallas", "dallas wings", "texas legends", "north texas sc", "smu", "tcu", "unt", "north texas", "ut arlington", "dallas baptist"],
+  "San Francisco": ["san francisco", "golden state", "golden state warriors", "san francisco 49ers", "sf giants", "oakland", "san jose", "san jose earthquakes", "bay fc", "santa cruz warriors", "stanford", "cal bears", "california golden bears", "santa clara", "bay area", "san jose state", "usf dons"],
+  "Boston": ["boston", "boston celtics", "boston bruins", "boston red sox", "new england patriots", "new england revolution", "new england", "maine celtics", "boston college", "northeastern", "harvard", "boston university", "holy cross", "merrimack"],
+  "Miami": ["miami", "miami heat", "miami dolphins", "florida panthers", "miami marlins", "inter miami", "sioux falls", "fiu", "miami hurricanes", "florida atlantic", "lynn"],
+  "Houston": ["houston", "houston rockets", "houston texans", "houston astros", "houston dynamo", "houston dash", "rio grande valley vipers", "rgv vipers", "rice", "houston cougars", "houston baptist", "sam houston"],
+  "Philadelphia": ["philadelphia", "philadelphia 76ers", "philadelphia sixers", "philadelphia flyers", "philadelphia eagles", "philadelphia phillies", "philadelphia union", "delaware blue coats", "villanova", "temple", "drexel", "la salle", "saint joseph", "penn quakers"],
+  "Atlanta": ["atlanta", "atlanta hawks", "atlanta falcons", "atlanta braves", "atlanta united", "atlanta dream", "college park skyhawks", "georgia swarm", "georgia tech", "georgia state", "kennesaw", "mercer"],
 };
 
-/* ESPN leagues to scan */
+/* ESPN leagues to scan — groups param needed for college leagues to get all D1 games */
 const ESPN_LEAGUES = [
+  // Major US pro leagues
   { sport: "basketball", league: "nba" },
   { sport: "hockey", league: "nhl" },
   { sport: "football", league: "nfl" },
   { sport: "baseball", league: "mlb" },
   { sport: "soccer", league: "usa.1" },
-  { sport: "basketball", league: "mens-college-basketball" },
-  { sport: "football", league: "college-football" },
   { sport: "basketball", league: "wnba" },
+  // College
+  { sport: "basketball", league: "mens-college-basketball", groups: 50 },
+  { sport: "basketball", league: "womens-college-basketball", groups: 50 },
+  { sport: "football", league: "college-football", groups: 80 },
   { sport: "baseball", league: "college-baseball" },
+  { sport: "hockey", league: "mens-college-hockey" },
+  // Minor / development
+  { sport: "basketball", league: "nba-development" },
+  // Soccer
+  { sport: "soccer", league: "usa.nwsl" },
+  { sport: "soccer", league: "usa.usl.l1" },
+  { sport: "soccer", league: "mex.1" },
+  // Other sports
+  { sport: "lacrosse", league: "pll" },
+  { sport: "lacrosse", league: "nll" },
+  { sport: "mma", league: "ufc" },
+  { sport: "golf", league: "pga" },
+  { sport: "tennis", league: "atp" },
+  { sport: "tennis", league: "wta" },
+  { sport: "racing", league: "f1" },
+  { sport: "racing", league: "irl" },
 ];
 
 /* ═══════════════════════════════════════════
@@ -221,10 +240,15 @@ async function fetchSG(city, dateStr) {
 function prettySport(raw) {
   const map = {
     "sports": "Sports", "nba": "NBA", "nhl": "NHL", "nfl": "NFL",
-    "mlb": "MLB", "mls": "MLS", "ncaa football": "NCAAF",
-    "ncaa basketball": "NCAAM", "ncaa womens basketball": "NCAAW",
-    "boxing": "Boxing", "mma": "MMA", "pga": "Golf", "tennis": "Tennis",
-    "wrestling": "Wrestling", "soccer": "Soccer", "minor league baseball": "MiLB",
+    "mlb": "MLB", "mls": "MLS", "nwsl": "NWSL", "wnba": "WNBA",
+    "ncaa football": "NCAAF", "ncaa basketball": "NCAAM",
+    "ncaa womens basketball": "NCAAW", "ncaa hockey": "College Hockey",
+    "boxing": "Boxing", "mma": "MMA", "ufc": "UFC",
+    "pga": "Golf", "golf": "Golf", "tennis": "Tennis",
+    "wrestling": "Wrestling", "soccer": "Soccer",
+    "minor league baseball": "MiLB", "nba g league": "G-League",
+    "lacrosse": "Lacrosse", "auto racing": "Racing",
+    "formula 1": "F1", "indycar": "IndyCar", "nascar": "NASCAR",
   };
   return map[raw.toLowerCase()] || raw;
 }
@@ -239,9 +263,9 @@ async function fetchAllESPN(dateStr) {
   const dateParam = espnDateStr(dateStr);
   const allGames = [];
 
-  const fetches = ESPN_LEAGUES.map(async ({ sport, league }) => {
+  const fetches = ESPN_LEAGUES.map(async ({ sport, league, groups }) => {
     try {
-      const url = `https://site.api.espn.com/apis/site/v2/sports/${sport}/${league}/scoreboard?dates=${dateParam}&limit=200`;
+      const url = `https://site.api.espn.com/apis/site/v2/sports/${sport}/${league}/scoreboard?dates=${dateParam}&limit=500${groups ? `&groups=${groups}` : ``}`;
       const res = await fetch(url);
       if (!res.ok) return;
       const data = await res.json();
@@ -255,12 +279,17 @@ async function fetchAllESPN(dateStr) {
         const broadcasts = comp.broadcasts?.flatMap(b => b.names || []) || [];
         const venue = comp.venue?.fullName || "";
 
-        const leagueLabel = league.toUpperCase()
-          .replace("MENS-COLLEGE-BASKETBALL", "NCAAM")
-          .replace("COLLEGE-FOOTBALL", "NCAAF")
-          .replace("COLLEGE-HOCKEY", "College Hockey")
-          .replace("COLLEGE-BASEBALL", "College Baseball")
-          .replace("USA.1", "MLS");
+        const LEAGUE_LABELS = {
+          "nba": "NBA", "nhl": "NHL", "nfl": "NFL", "mlb": "MLB", "wnba": "WNBA",
+          "usa.1": "MLS", "usa.nwsl": "NWSL", "usa.usl.l1": "USL", "mex.1": "Liga MX",
+          "mens-college-basketball": "NCAAM", "womens-college-basketball": "NCAAW",
+          "college-football": "NCAAF", "college-baseball": "College Baseball",
+          "mens-college-hockey": "College Hockey", "nba-development": "G-League",
+          "pll": "PLL", "nll": "NLL", "ufc": "UFC",
+          "pga": "PGA", "atp": "ATP", "wta": "WTA",
+          "f1": "F1", "irl": "IndyCar",
+        };
+        const leagueLabel = LEAGUE_LABELS[league] || league.toUpperCase();
 
         allGames.push({
           espnId: ev.id,
@@ -304,9 +333,14 @@ async function fetchAllESPN(dateStr) {
 
 /* Map league labels to ESPN URL sport paths */
 const ESPN_SPORT_PATH = {
-  "NBA": "nba", "NHL": "nhl", "NFL": "nfl", "MLB": "mlb", "MLS": "soccer",
-  "NCAAM": "mens-college-basketball", "NCAAF": "college-football",
-  "WNBA": "wnba", "College Baseball": "college-baseball",
+  "NBA": "nba", "NHL": "nhl", "NFL": "nfl", "MLB": "mlb", "WNBA": "wnba",
+  "MLS": "soccer", "NWSL": "soccer", "USL": "soccer", "Liga MX": "soccer",
+  "NCAAM": "mens-college-basketball", "NCAAW": "womens-college-basketball",
+  "NCAAF": "college-football", "College Baseball": "college-baseball",
+  "College Hockey": "mens-college-hockey", "G-League": "nba-development",
+  "PLL": "lacrosse", "NLL": "lacrosse", "UFC": "mma",
+  "PGA": "golf", "ATP": "tennis", "WTA": "tennis",
+  "F1": "f1", "IndyCar": "indycar",
 };
 
 /* Check if an ESPN game belongs to a city (home or away) */
@@ -337,22 +371,46 @@ function espnGameInCity(game, cityName) {
   return null;
 }
 
+/* Check if any of a team's name variants can be found in the event name */
+function teamInEvent(names, evName, evWords) {
+  // Direct substring match (handles multi-word names like "USC Trojans")
+  if (names.some(n => n.length > 2 && evName.includes(n))) return true;
+  // Word-boundary match for shorter names / abbreviations (e.g. "USC", "UCLA")
+  for (const n of names) {
+    if (n.length < 2) continue;
+    if (evWords.has(n)) return true;
+  }
+  return false;
+}
+
 /* Match a TM/SG event to an ESPN game */
 function findESPNMatch(event, espnGames) {
   const evName = event.name.toLowerCase();
+  const evWords = new Set(evName.split(/[\s\-,.()]+/).filter(w => w.length > 1));
+
+  // Strip leading ranking numbers like "5 " from ESPN team names
+  const clean = s => (s || "").toLowerCase().replace(/^\d+\s+/, "").trim();
 
   for (const game of espnGames) {
     if (!game.home || !game.away) continue;
-    const homeNames = [game.home.name, game.home.shortName, game.home.city, game.home.location]
-      .map(n => (n || "").toLowerCase()).filter(n => n.length > 2);
-    const awayNames = [game.away.name, game.away.shortName, game.away.city, game.away.location]
-      .map(n => (n || "").toLowerCase()).filter(n => n.length > 2);
 
-    const homeMatch = homeNames.some(n => evName.includes(n));
-    const awayMatch = awayNames.some(n => evName.includes(n));
-    if (homeMatch && awayMatch) return game;
+    const homeNames = [...new Set([
+      clean(game.home.name), clean(game.home.shortName),
+      clean(game.home.city), clean(game.home.location),
+    ])].filter(n => n.length > 1);
+
+    const awayNames = [...new Set([
+      clean(game.away.name), clean(game.away.shortName),
+      clean(game.away.city), clean(game.away.location),
+    ])].filter(n => n.length > 1);
+
+    if (teamInEvent(homeNames, evName, evWords) &&
+        teamInEvent(awayNames, evName, evWords)) {
+      return game;
+    }
   }
 
+  // Venue + time proximity fallback
   for (const game of espnGames) {
     if (game.venueNorm && event.venueNorm &&
         game.venueNorm === event.venueNorm &&
