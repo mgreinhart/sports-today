@@ -25,7 +25,7 @@ const CITIES = [
   for teams that play in that city, even if TM didn't list them.
 */
 const CITY_TEAMS = {
-  "Los Angeles": ["los angeles", "la ", "los angeles lakers", "la clippers", "la rams", "la chargers", "la kings", "anaheim ducks", "la angels", "los angeles dodgers", "la galaxy", "lafc", "la sparks", "angel city", "south bay lakers", "ontario clippers", "ucla", "usc", "loyola marymount", "pepperdine", "cal state northridge", "cal state fullerton", "cal state bakersfield", "long beach state", "csun", "lmu"],
+  "Los Angeles": ["los angeles", "los angeles lakers", "la clippers", "la rams", "la chargers", "la kings", "anaheim ducks", "la angels", "los angeles dodgers", "la galaxy", "lafc", "la sparks", "angel city", "south bay lakers", "ontario clippers", "ucla", "usc", "loyola marymount", "pepperdine", "cal state northridge", "cal state fullerton", "cal state bakersfield", "long beach state", "csun", "lmu"],
   "New York": ["new york", "brooklyn", "brooklyn nets", "new york knicks", "new york rangers", "new york islanders", "new york yankees", "new york mets", "ny giants", "ny jets", "nycfc", "new york red bulls", "new york liberty", "gotham fc", "westchester knicks", "long island nets", "st. john", "seton hall", "fordham", "iona", "manhattan", "wagner", "marist"],
   "Chicago": ["chicago", "chicago bulls", "chicago blackhawks", "chicago bears", "chicago cubs", "chicago white sox", "chicago fire", "chicago sky", "chicago stars", "windy city bulls", "northwestern", "depaul", "loyola chicago", "uic", "illinois chicago"],
   "Dallas": ["dallas", "dallas mavericks", "dallas stars", "dallas cowboys", "fc dallas", "dallas wings", "texas legends", "north texas sc", "smu", "tcu", "unt", "north texas", "ut arlington", "dallas baptist"],
@@ -119,6 +119,15 @@ function utcRange(dateStr) {
 }
 
 /* ═══════════════════════════════════════════
+   NON-GAME EVENT FILTER
+   ═══════════════════════════════════════════ */
+const NON_GAME_RE = /\b(party|parties|festival|craft beer|fun zone|gala|brunch|concert|fireworks|tailgate|fan ?fest|meet.?greet|open house|job fair|watch party|viewing party|pre.?game|post.?game|happy hour|food truck|chandelier|ketel one|fiesta)\b/i;
+
+function isActualSportingEvent(event) {
+  return !NON_GAME_RE.test(event.name);
+}
+
+/* ═══════════════════════════════════════════
    VENUE / DEDUP HELPERS
    ═══════════════════════════════════════════ */
 function normVenue(name) {
@@ -168,7 +177,8 @@ async function fetchTM(city, dateStr) {
     .filter(e => e.dates?.start?.localDate === dateStr)
     .map((e, idx) => {
       const cls = e.classifications?.[0] || {};
-      const sport = cls.subGenre?.name || cls.genre?.name || cls.segment?.name || "Sports";
+      const rawSport = cls.subGenre?.name || cls.genre?.name || cls.segment?.name || "Sports";
+      const sport = inferSport(e.name, rawSport);
       const venueObj = e._embedded?.venues?.[0];
       const venue = venueObj?.name || "";
       const venueCity = venueObj?.city?.name || "";
@@ -251,6 +261,30 @@ function prettySport(raw) {
     "formula 1": "F1", "indycar": "IndyCar", "nascar": "NASCAR",
   };
   return map[raw.toLowerCase()] || raw;
+}
+
+/* Infer sport from event name when TM classification is generic */
+function inferSport(name, tmSport) {
+  const lower = (tmSport || "").toLowerCase();
+  if (lower !== "miscellaneous" && lower !== "sports" && lower !== "undefined") return tmSport;
+  const n = name.toLowerCase();
+  if (/\bbaseball\b/.test(n)) return "College Baseball";
+  if (/\bbasketball\b/.test(n)) return "College Basketball";
+  if (/\bsoftball\b/.test(n)) return "Softball";
+  if (/\bsoccer\b/.test(n) || /\bfútbol\b/.test(n)) return "Soccer";
+  if (/\bfootball\b/.test(n)) return "Football";
+  if (/\bhockey\b/.test(n)) return "Hockey";
+  if (/\blacrosse\b/.test(n)) return "Lacrosse";
+  if (/\btennis\b/.test(n)) return "Tennis";
+  if (/\bgolf\b/.test(n)) return "Golf";
+  if (/\bvolleyball\b/.test(n)) return "Volleyball";
+  if (/\bwrestling\b/.test(n)) return "Wrestling";
+  if (/\bswim/.test(n) || /\bdiving\b/.test(n)) return "Swimming";
+  if (/\btrack\b/.test(n) || /\bcross country\b/.test(n)) return "Track & Field";
+  if (/\bgymnastics\b/.test(n)) return "Gymnastics";
+  if (/\browing\b/.test(n)) return "Rowing";
+  if (/\bwater polo\b/.test(n)) return "Water Polo";
+  return tmSport;
 }
 
 /* ═══════════════════════════════════════════
@@ -544,7 +578,7 @@ function useEvents(city, dateStr) {
       ]);
 
       const tmEvents = tmEventsRaw.filter(e =>
-        !e.venueState || e.venueState === city.state
+        (!e.venueState || e.venueState === city.state) && isActualSportingEvent(e)
       );
 
       const merged = dedup(tmEvents, sgEvents);
@@ -619,185 +653,189 @@ function FinalBadge() {
   );
 }
 
-function ScoreBlock({ event }) {
-  if (!event.score || !event.home || !event.away) return null;
-  const isFinal = event.isComplete;
+
+function EventCard({ event }) {
+  const hasTeams = event.home && event.away;
+  const dimmed = event.isComplete || event.isStarted;
+  const isLive = event.isLive;
+  const hasScore = (isLive || event.isComplete) && event.score && hasTeams;
+
   const espnPath = ESPN_SPORT_PATH[event.sport];
   const espnUrl = event.espnId && espnPath
     ? `https://www.espn.com/${espnPath}/game/_/gameId/${event.espnId}`
     : null;
 
-  const block = (
-    <div style={{
-      display: "inline-flex", alignItems: "stretch",
-      fontFamily: "'IBM Plex Sans', sans-serif",
-      borderRadius: 6, overflow: "hidden", border: "1px solid #e8e4de",
-    }}>
-      <div style={{
-        display: "flex", alignItems: "center",
-        background: "#f7f5f0", padding: "8px 14px", gap: 10, minWidth: 90,
-      }}>
-        {event.home.logo && <img src={event.home.logo} alt="" style={{ width: 18, height: 18, objectFit: "contain" }}/>}
-        <span style={{ fontSize: 13, fontWeight: 600, color: "#1a1714" }}>{event.home.city}</span>
-        <span style={{ fontSize: 22, fontWeight: 700, color: "#1a1714", lineHeight: 1 }}>{event.score.home}</span>
-      </div>
-      <div style={{
-        display: "flex", alignItems: "center",
-        background: "#f7f5f0", padding: "8px 14px", gap: 10, minWidth: 90,
-        borderLeft: "1px solid #e8e4de",
-      }}>
-        {event.away.logo && <img src={event.away.logo} alt="" style={{ width: 18, height: 18, objectFit: "contain" }}/>}
-        <span style={{ fontSize: 13, fontWeight: 600, color: "#1a1714" }}>{event.away.city}</span>
-        <span style={{ fontSize: 22, fontWeight: 700, color: "#1a1714", lineHeight: 1 }}>{event.score.away}</span>
-      </div>
-      <div style={{
-        background: "#f7f5f0", padding: "8px 12px",
-        borderLeft: "1px solid #e8e4de",
-        display: "flex", alignItems: "center",
-      }}>
-        <span style={{
-          fontSize: 11, fontWeight: 500,
-          color: isFinal ? "#8c8578" : "#c0392b",
-        }}>{event.score.status}</span>
-      </div>
-    </div>
-  );
+  /* Build a concise title: use short team names if available, else event.name */
+  const title = hasTeams
+    ? `${event.away.shortName || event.away.name} at ${event.home.shortName || event.home.name}`
+    : event.name;
 
-  if (espnUrl) {
-    return (
-      <a href={espnUrl} target="_blank" rel="noopener noreferrer"
-        style={{ display: "inline-flex", margin: "12px 0 4px", textDecoration: "none", transition: "opacity 0.15s" }}
-        onMouseEnter={e => e.currentTarget.style.opacity = "0.7"}
-        onMouseLeave={e => e.currentTarget.style.opacity = "1"}
-      >{block}</a>
-    );
-  }
-
-  return <div style={{ margin: "12px 0 4px" }}>{block}</div>;
-}
-
-function EventRow({ event, isFirst, isLast }) {
-  const hasTeams = event.home && event.away;
-  const dimmed = event.isComplete || event.isStarted;
-  const showRecords = hasTeams && event.home.record && !event.isLive && !event.isComplete && !event.isStarted;
-  const isLive = event.isLive;
   return (
     <div style={{
-      ...(isLive
-        ? {
-            border: "1px solid rgba(192, 57, 43, 0.15)",
-            borderRadius: 8,
-            background: "rgba(192, 57, 43, 0.03)",
-            padding: 16,
-            marginTop: isFirst ? 20 : 12,
-            marginBottom: isLast ? 0 : 12,
-          }
-        : {
-            borderBottom: isLast ? "none" : "1px solid #e8e4de",
-            padding: "20px 0",
-          }),
-    }}>
-      {/* Meta */}
+      border: isLive ? "1px solid rgba(192, 57, 43, 0.2)" : "1px solid #e8e4de",
+      borderRadius: 10,
+      background: isLive ? "rgba(192, 57, 43, 0.02)" : "#fff",
+      padding: "14px 16px",
+      display: "flex", flexDirection: "column", gap: 10,
+      transition: "box-shadow 0.15s",
+      minHeight: 0,
+    }}
+      onMouseEnter={e => e.currentTarget.style.boxShadow = "0 2px 12px rgba(26,23,20,0.06)"}
+      onMouseLeave={e => e.currentTarget.style.boxShadow = "none"}
+    >
+      {/* Top row: league + time */}
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
-        marginBottom: 8,
       }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{
-            fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 11,
-            fontWeight: 600, color: "#8c8578", letterSpacing: "0.04em",
+            fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 10,
+            fontWeight: 600, color: "#8c8578", letterSpacing: "0.06em",
+            textTransform: "uppercase",
           }}>{event.sport}</span>
-          {event.isAway && (
-            <span style={{
-              fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 11,
-              fontWeight: 600, color: "#b0a898", letterSpacing: "0.04em",
-            }}>Away</span>
-          )}
+          {isLive && <LiveDot />}
           {!isLive && event.isComplete && <FinalBadge />}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {isLive && <LiveDot />}
+        <div style={{
+          display: "flex", alignItems: "center", gap: 5,
+          minWidth: 0, justifyContent: "flex-end",
+        }}>
+          {event.broadcast && event.broadcast.length > 0 && (
+            <span style={{
+              fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 10,
+              color: "#b0a898", fontWeight: 500,
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              maxWidth: 100,
+            }}>{event.broadcast.slice(0, 2).join(", ")}</span>
+          )}
           <span style={{
-            fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 11,
-            color: event.isStarted ? "#b0a898" : "#8c8578", fontWeight: 400, letterSpacing: "0.02em",
+            fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 10.5,
+            color: "#b0a898", fontWeight: 400, flexShrink: 0,
           }}>
-            {event.isStarted ? `Started at ${event.time}` : event.time}
+            {event.isStarted ? `Started ${event.time}` : event.time}
           </span>
         </div>
       </div>
 
-      {/* Name with logos */}
-      <h3 style={{
-        fontFamily: "'Source Serif 4', Georgia, serif",
-        fontSize: 21,
-        fontWeight: 600, color: dimmed ? "#6b6259" : "#1a1714",
-        lineHeight: 1.25, margin: 0, letterSpacing: "-0.01em",
-        display: "flex", alignItems: "center", gap: 10,
-      }}>
-        {!isLive && hasTeams && event.home.logo && (
-          <span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
-            <img src={event.away.logo} alt="" style={{
-              width: 22, height: 22, objectFit: "contain",
-              opacity: dimmed ? 0.6 : 1,
-            }}/>
-            <span style={{ color: "#ccc8c0", fontSize: 14, fontWeight: 400, fontFamily: "'IBM Plex Sans', sans-serif" }}>@</span>
-            <img src={event.home.logo} alt="" style={{
-              width: 22, height: 22, objectFit: "contain",
-              opacity: dimmed ? 0.6 : 1,
-            }}/>
-          </span>
-        )}
-        <span>{event.name}</span>
-      </h3>
-
-      {/* Records */}
-      {showRecords && (
-        <p style={{
-          fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 13,
-          color: "#8c8578", marginTop: 4, lineHeight: 1.4,
-        }}>
-          {event.home.name} ({event.home.record}) vs {event.away.name} ({event.away.record})
-        </p>
-      )}
-
-      {/* Score */}
-      {(event.isLive || event.isComplete) && <ScoreBlock event={event} />}
-
-      {/* Footer */}
-      <div style={{
-        display: "flex", alignItems: "center", justifyContent: "space-between",
-        marginTop: 10, flexWrap: "wrap", gap: 6,
-      }}>
-        <div style={{
-          fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 12.5,
-          color: "#8c8578", display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap",
-        }}>
-          <span>{event.venue}</span>
-          {event.broadcast && event.broadcast.length > 0 && (
-            <>
-              <span style={{ color: "#ccc8c0", margin: "0 2px" }}>·</span>
-              <span>{event.broadcast.join(", ")}</span>
-            </>
-          )}
-          {event.source === "sg" && (
-            <>
-              <span style={{ color: "#ccc8c0", margin: "0 2px" }}>·</span>
-              <span style={{ fontSize: 10, color: "#b0a898" }}>via SeatGeek</span>
-            </>
+      {/* Matchup or event name */}
+      {hasTeams ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {/* Away team */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+              {event.away.logo && <img src={event.away.logo} alt="" style={{
+                width: 20, height: 20, objectFit: "contain", flexShrink: 0,
+                opacity: dimmed ? 0.5 : 1,
+              }}/>}
+              <span style={{
+                fontFamily: "'Source Serif 4', Georgia, serif",
+                fontSize: 15, fontWeight: 600,
+                color: dimmed ? "#8c8578" : "#1a1714",
+                lineHeight: 1.2,
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              }}>{event.away.shortName || event.away.name}</span>
+              {event.away.record && !hasScore && (
+                <span style={{
+                  fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 11,
+                  color: "#b0a898", flexShrink: 0,
+                }}>{event.away.record}</span>
+              )}
+            </div>
+            {hasScore && (
+              <span style={{
+                fontFamily: "'IBM Plex Sans', sans-serif",
+                fontSize: 18, fontWeight: 700,
+                color: dimmed ? "#8c8578" : "#1a1714",
+                lineHeight: 1, minWidth: 24, textAlign: "right",
+              }}>{event.score.away}</span>
+            )}
+          </div>
+          {/* Home team */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+              {event.home.logo && <img src={event.home.logo} alt="" style={{
+                width: 20, height: 20, objectFit: "contain", flexShrink: 0,
+                opacity: dimmed ? 0.5 : 1,
+              }}/>}
+              <span style={{
+                fontFamily: "'Source Serif 4', Georgia, serif",
+                fontSize: 15, fontWeight: 600,
+                color: dimmed ? "#8c8578" : "#1a1714",
+                lineHeight: 1.2,
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              }}>{event.home.shortName || event.home.name}</span>
+              {event.home.record && !hasScore && (
+                <span style={{
+                  fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 11,
+                  color: "#b0a898", flexShrink: 0,
+                }}>{event.home.record}</span>
+              )}
+            </div>
+            {hasScore && (
+              <span style={{
+                fontFamily: "'IBM Plex Sans', sans-serif",
+                fontSize: 18, fontWeight: 700,
+                color: dimmed ? "#8c8578" : "#1a1714",
+                lineHeight: 1, minWidth: 24, textAlign: "right",
+              }}>{event.score.home}</span>
+            )}
+          </div>
+          {/* Score status */}
+          {hasScore && (
+            <span style={{
+              fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 10.5,
+              color: isLive ? "#c0392b" : "#b0a898", fontWeight: 500,
+            }}>{event.score.status}</span>
           )}
         </div>
-        {event.ticketUrl && (
-          <a href={event.ticketUrl} target="_blank" rel="noopener noreferrer"
-            style={{
-              fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 12,
-              fontWeight: 600, color: "#1a1714", textDecoration: "none",
-              borderBottom: "1.5px solid #1a1714", paddingBottom: 1,
-              transition: "opacity 0.15s", lineHeight: 1,
-            }}
-            onMouseEnter={e => e.target.style.opacity = "0.5"}
-            onMouseLeave={e => e.target.style.opacity = "1"}
-          >Tickets ↗</a>
-        )}
+      ) : (
+        <h3 style={{
+          fontFamily: "'Source Serif 4', Georgia, serif",
+          fontSize: 15, fontWeight: 600,
+          color: dimmed ? "#8c8578" : "#1a1714",
+          lineHeight: 1.3, margin: 0,
+        }}>{event.name}</h3>
+      )}
+
+      {/* Footer: venue + links */}
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        gap: 8, marginTop: "auto",
+        borderTop: "1px solid #f0ece5", paddingTop: 8,
+      }}>
+        <div style={{
+          fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 11,
+          color: "#b0a898", overflow: "hidden", textOverflow: "ellipsis",
+          whiteSpace: "nowrap", minWidth: 0,
+        }}>
+          {event.venue}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          {espnUrl && (
+            <a href={espnUrl} target="_blank" rel="noopener noreferrer"
+              style={{
+                fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 10.5,
+                fontWeight: 600, color: "#8c8578", textDecoration: "none",
+                borderBottom: "1px solid #b0a898", paddingBottom: 0.5,
+                transition: "opacity 0.15s", lineHeight: 1,
+              }}
+              onMouseEnter={e => e.target.style.opacity = "0.5"}
+              onMouseLeave={e => e.target.style.opacity = "1"}
+            >ESPN ↗</a>
+          )}
+          {event.ticketUrl && (
+            <a href={event.ticketUrl} target="_blank" rel="noopener noreferrer"
+              style={{
+                fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 10.5,
+                fontWeight: 600, color: "#1a1714", textDecoration: "none",
+                borderBottom: "1px solid #1a1714", paddingBottom: 0.5,
+                transition: "opacity 0.15s", lineHeight: 1,
+              }}
+              onMouseEnter={e => e.target.style.opacity = "0.5"}
+              onMouseLeave={e => e.target.style.opacity = "1"}
+            >Tickets ↗</a>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -852,20 +890,22 @@ export default function SportsToday() {
   const liveCount = events.filter(e => e.isLive).length;
 
   const now = Date.now();
-  const sortedEvents = [...events].map(e => {
-    if (!e.espnMatched && !e.isLive && !e.isComplete && e.dateTime && new Date(e.dateTime).getTime() < now) {
-      return { ...e, isStarted: true };
-    }
-    return e;
-  }).sort((a, b) => {
-    // Group: live (0), upcoming (1), started (2), completed (3)
-    const groupA = a.isLive ? 0 : a.isComplete ? 3 : a.isStarted ? 2 : 1;
-    const groupB = b.isLive ? 0 : b.isComplete ? 3 : b.isStarted ? 2 : 1;
-    if (groupA !== groupB) return groupA - groupB;
-    const tA = a.dateTime ? new Date(a.dateTime).getTime() : Infinity;
-    const tB = b.dateTime ? new Date(b.dateTime).getTime() : Infinity;
-    return tA - tB;
-  });
+  const sortedEvents = [...events]
+    .filter(e => !e.isAway)
+    .map(e => {
+      if (!e.espnMatched && !e.isLive && !e.isComplete && e.dateTime && new Date(e.dateTime).getTime() < now) {
+        return { ...e, isStarted: true };
+      }
+      return e;
+    }).sort((a, b) => {
+      // Group: live (0), upcoming (1), started (2), completed (3)
+      const groupA = a.isLive ? 0 : a.isComplete ? 3 : a.isStarted ? 2 : 1;
+      const groupB = b.isLive ? 0 : b.isComplete ? 3 : b.isStarted ? 2 : 1;
+      if (groupA !== groupB) return groupA - groupB;
+      const tA = a.dateTime ? new Date(a.dateTime).getTime() : Infinity;
+      const tB = b.dateTime ? new Date(b.dateTime).getTime() : Infinity;
+      return tA - tB;
+    });
 
   return (
     <div style={{
@@ -880,6 +920,9 @@ export default function SportsToday() {
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         ::selection { background: #1a1714; color: #faf8f4; }
         .date-strip::-webkit-scrollbar { display: none; }
+        @media (max-width: 560px) {
+          .events-grid { grid-template-columns: 1fr !important; }
+        }
       `}</style>
 
       <div style={{ maxWidth: 560, margin: "0 auto", padding: "0 24px" }}>
@@ -1039,7 +1082,7 @@ export default function SportsToday() {
         </header>
 
         {/* Events */}
-        <main style={{ borderTop: "2px solid #1a1714" }}>
+        <main>
           {loading ? (
             <Skeleton />
           ) : error ? (
@@ -1063,9 +1106,15 @@ export default function SportsToday() {
               }}>Retry</button>
             </div>
           ) : sortedEvents.length > 0 ? (
-            <div style={{ animation: "fadeIn 0.3s ease" }}>
-              {sortedEvents.map((event, i) => (
-                <EventRow key={event.id} event={event} isFirst={i === 0} isLast={i === sortedEvents.length - 1} />
+            <div className="events-grid" style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+              gap: 12,
+              paddingTop: 16,
+              animation: "fadeIn 0.3s ease",
+            }}>
+              {sortedEvents.map((event) => (
+                <EventCard key={event.id} event={event} />
               ))}
             </div>
           ) : (
