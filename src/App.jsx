@@ -1,0 +1,1046 @@
+import { useState, useRef, useEffect, useCallback } from "react";
+
+/* ═══════════════════════════════════════════
+   CONFIG — Replace these two values
+   ═══════════════════════════════════════════ */
+const TM_API_KEY = "gtO5Ac8XLwKGYCfqjGOVSYROsh32OFro";
+const SG_CLIENT_ID = "YOUR_SEATGEEK_CLIENT_ID";
+
+const CITIES = [
+  { name: "Los Angeles", dmaId: 324, sgCity: "Los+Angeles", tz: "America/Los_Angeles", state: "CA" },
+  { name: "New York", dmaId: 345, sgCity: "New+York", tz: "America/New_York", state: "NY" },
+  { name: "Chicago", dmaId: 602, sgCity: "Chicago", tz: "America/Chicago", state: "IL" },
+  { name: "Dallas", dmaId: 623, sgCity: "Dallas", tz: "America/Chicago", state: "TX" },
+  { name: "San Francisco", dmaId: 807, sgCity: "San+Francisco", tz: "America/Los_Angeles", state: "CA" },
+  { name: "Boston", dmaId: 506, sgCity: "Boston", tz: "America/New_York", state: "MA" },
+  { name: "Miami", dmaId: 528, sgCity: "Miami", tz: "America/New_York", state: "FL" },
+  { name: "Houston", dmaId: 618, sgCity: "Houston", tz: "America/Chicago", state: "TX" },
+  { name: "Philadelphia", dmaId: 504, sgCity: "Philadelphia", tz: "America/New_York", state: "PA" },
+  { name: "Atlanta", dmaId: 220, sgCity: "Atlanta", tz: "America/New_York", state: "GA" },
+];
+
+/*
+  Map city names to ESPN team location keywords.
+  Used to inject ESPN-only games (live, completed, upcoming)
+  for teams that play in that city, even if TM didn't list them.
+*/
+const CITY_TEAMS = {
+  "Los Angeles": ["los angeles", "la ", "los angeles lakers", "la clippers", "la rams", "la chargers", "la kings", "anaheim ducks", "la angels", "los angeles dodgers", "la galaxy", "lafc", "la sparks", "ucla", "usc", "loyola marymount", "pepperdine", "cal state"],
+  "New York": ["new york", "brooklyn", "brooklyn nets", "new york knicks", "new york rangers", "new york islanders", "new york yankees", "new york mets", "ny giants", "ny jets", "nycfc", "new york red bulls", "new york liberty", "st. john"],
+  "Chicago": ["chicago", "chicago bulls", "chicago blackhawks", "chicago bears", "chicago cubs", "chicago white sox", "chicago fire", "chicago sky", "northwestern", "depaul", "loyola chicago"],
+  "Dallas": ["dallas", "dallas mavericks", "dallas stars", "dallas cowboys", "fc dallas", "dallas wings", "smu", "tcu", "unt", "north texas"],
+  "San Francisco": ["san francisco", "golden state", "golden state warriors", "san francisco 49ers", "sf giants", "oakland", "san jose", "san jose earthquakes", "stanford", "cal bears", "santa clara", "bay area"],
+  "Boston": ["boston", "boston celtics", "boston bruins", "boston red sox", "new england patriots", "new england revolution", "new england", "boston college", "northeastern", "harvard"],
+  "Miami": ["miami", "miami heat", "miami dolphins", "florida panthers", "miami marlins", "inter miami", "fiu", "miami hurricanes"],
+  "Houston": ["houston", "houston rockets", "houston texans", "houston astros", "houston dynamo", "houston dash", "rice", "houston cougars"],
+  "Philadelphia": ["philadelphia", "philadelphia 76ers", "philadelphia sixers", "philadelphia flyers", "philadelphia eagles", "philadelphia phillies", "philadelphia union", "villanova", "temple", "drexel", "la salle"],
+  "Atlanta": ["atlanta", "atlanta hawks", "atlanta falcons", "atlanta braves", "atlanta united", "atlanta dream", "georgia tech", "georgia state", "kennesaw"],
+};
+
+/* ESPN leagues to scan */
+const ESPN_LEAGUES = [
+  { sport: "basketball", league: "nba" },
+  { sport: "hockey", league: "nhl" },
+  { sport: "football", league: "nfl" },
+  { sport: "baseball", league: "mlb" },
+  { sport: "soccer", league: "usa.1" },
+  { sport: "basketball", league: "mens-college-basketball" },
+  { sport: "football", league: "college-football" },
+  { sport: "basketball", league: "wnba" },
+  { sport: "baseball", league: "college-baseball" },
+];
+
+/* ═══════════════════════════════════════════
+   CACHE
+   ═══════════════════════════════════════════ */
+const cache = { events: {}, espn: {} };
+
+/* ═══════════════════════════════════════════
+   DATE HELPERS
+   ═══════════════════════════════════════════ */
+function pad2(n) { return String(n).padStart(2, "0"); }
+function localDateStr(d) {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function getDateOptions() {
+  const dates = [];
+  const now = new Date();
+  for (let i = 0; i < 30; i++) {
+    const d = new Date(now); d.setDate(d.getDate() + i);
+    dates.push({
+      key: localDateStr(d),
+      weekday: i === 0 ? "TODAY" : d.toLocaleDateString("en-US", { weekday: "short" }).toUpperCase(),
+      dayNum: d.getDate(),
+      dateLabel: i === 0
+        ? "Today"
+        : d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }),
+    });
+  }
+  return dates;
+}
+
+function formatTime(dateTimeStr, tz) {
+  try {
+    return new Date(dateTimeStr).toLocaleTimeString("en-US", {
+      hour: "numeric", minute: "2-digit", timeZone: tz,
+    });
+  } catch { return "TBD"; }
+}
+
+function espnDateStr(dateKey) { return dateKey.replace(/-/g, ""); }
+
+/* Wide UTC window for the full local day across all US timezones */
+function utcRange(dateStr) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return {
+    start: new Date(Date.UTC(y, m - 1, d, 0, 0, 0)).toISOString().replace(".000Z", "Z"),
+    end: new Date(Date.UTC(y, m - 1, d + 1, 13, 0, 0)).toISOString().replace(".000Z", "Z"),
+  };
+}
+
+/* ═══════════════════════════════════════════
+   VENUE / DEDUP HELPERS
+   ═══════════════════════════════════════════ */
+function normVenue(name) {
+  return (name || "").toLowerCase()
+    .replace(/[''`]/g, "")
+    .replace(/\b(the|at|arena|stadium|field|center|centre|park|dome|coliseum|amphitheatre|amphitheater)\b/g, "")
+    .replace(/[^a-z0-9]/g, "")
+    .trim();
+}
+
+function timeClose(dt1, dt2, thresholdMin = 120) {
+  if (!dt1 || !dt2) return false;
+  return Math.abs(new Date(dt1) - new Date(dt2)) < thresholdMin * 60 * 1000;
+}
+
+function dedup(tmEvents, sgEvents) {
+  const merged = [...tmEvents];
+  for (const sg of sgEvents) {
+    const isDupe = tmEvents.some(tm =>
+      tm.venueNorm === sg.venueNorm && timeClose(tm.dateTime, sg.dateTime)
+    );
+    if (!isDupe) merged.push(sg);
+  }
+  return merged;
+}
+
+/* ═══════════════════════════════════════════
+   TICKETMASTER
+   ═══════════════════════════════════════════ */
+async function fetchTM(city, dateStr) {
+  const { start, end } = utcRange(dateStr);
+  const params = new URLSearchParams({
+    apikey: TM_API_KEY,
+    dmaId: String(city.dmaId),
+    classificationName: "Sports",
+    startDateTime: start,
+    endDateTime: end,
+    sort: "relevance,desc",
+    size: "200",
+  });
+  const res = await fetch(`https://app.ticketmaster.com/discovery/v2/events.json?${params}`);
+  if (!res.ok) throw new Error(`TM ${res.status}`);
+  const data = await res.json();
+  if (!data._embedded?.events) return [];
+
+  return data._embedded.events
+    .filter(e => e.dates?.start?.localDate === dateStr)
+    .map((e, idx) => {
+      const cls = e.classifications?.[0] || {};
+      const sport = cls.subGenre?.name || cls.genre?.name || cls.segment?.name || "Sports";
+      const venueObj = e._embedded?.venues?.[0];
+      const venue = venueObj?.name || "";
+      const venueCity = venueObj?.city?.name || "";
+      const venueState = venueObj?.state?.stateCode || "";
+      const lt = e.dates?.start?.localTime;
+      const dt = e.dates?.start?.dateTime || (lt ? `${dateStr}T${lt}` : null);
+      return {
+        id: `tm-${e.id}`,
+        name: e.name,
+        sport,
+        venue,
+        venueCity,
+        venueState,
+        venueNorm: normVenue(venue),
+        time: dt ? formatTime(dt, city.tz) : "TBD",
+        dateTime: dt,
+        ticketUrl: e.url || "#",
+        source: "tm",
+        isLive: false,
+        isComplete: false,
+        score: null,
+        home: null,
+        away: null,
+        broadcast: null,
+        popularity: 200 - idx,
+      };
+    });
+}
+
+/* ═══════════════════════════════════════════
+   SEATGEEK
+   ═══════════════════════════════════════════ */
+async function fetchSG(city, dateStr) {
+  const gte = `${dateStr}T00:00:00`;
+  const lte = `${dateStr}T23:59:59`;
+  const url = `https://api.seatgeek.com/2/events?client_id=${SG_CLIENT_ID}`
+    + `&venue.city=${city.sgCity}&taxonomies.name=sports`
+    + `&datetime_utc.gte=${gte}&datetime_utc.lte=${lte}&per_page=50&sort=score.desc`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`SG ${res.status}`);
+  const data = await res.json();
+  if (!data.events) return [];
+
+  return data.events.map(e => {
+    const venue = e.venue?.name_v2 || e.venue?.name || "";
+    const dt = e.datetime_utc ? e.datetime_utc + "Z" : null;
+    const sport = e.taxonomies?.[0]?.name || "Sports";
+    return {
+      id: `sg-${e.id}`,
+      name: e.short_title || e.title,
+      sport: prettySport(sport),
+      venue,
+      venueNorm: normVenue(venue),
+      time: dt ? formatTime(dt, city.tz) : "TBD",
+      dateTime: dt,
+      ticketUrl: e.url || "#",
+      source: "sg",
+      isLive: false,
+      isComplete: false,
+      score: null,
+      home: null,
+      away: null,
+      broadcast: null,
+      popularity: Math.round((e.score || 0) * 100),
+    };
+  });
+}
+
+function prettySport(raw) {
+  const map = {
+    "sports": "Sports", "nba": "NBA", "nhl": "NHL", "nfl": "NFL",
+    "mlb": "MLB", "mls": "MLS", "ncaa football": "NCAAF",
+    "ncaa basketball": "NCAAM", "ncaa womens basketball": "NCAAW",
+    "boxing": "Boxing", "mma": "MMA", "pga": "Golf", "tennis": "Tennis",
+    "wrestling": "Wrestling", "soccer": "Soccer", "minor league baseball": "MiLB",
+  };
+  return map[raw.toLowerCase()] || raw;
+}
+
+/* ═══════════════════════════════════════════
+   ESPN
+   ═══════════════════════════════════════════ */
+async function fetchAllESPN(dateStr) {
+  const cacheKey = `espn-${dateStr}`;
+  if (cache.espn[cacheKey]) return cache.espn[cacheKey];
+
+  const dateParam = espnDateStr(dateStr);
+  const allGames = [];
+
+  const fetches = ESPN_LEAGUES.map(async ({ sport, league }) => {
+    try {
+      const url = `https://site.api.espn.com/apis/site/v2/sports/${sport}/${league}/scoreboard?dates=${dateParam}&limit=200`;
+      const res = await fetch(url);
+      if (!res.ok) return;
+      const data = await res.json();
+      for (const ev of (data.events || [])) {
+        const comp = ev.competitions?.[0];
+        if (!comp) continue;
+        const competitors = comp.competitors || [];
+        const home = competitors.find(c => c.homeAway === "home");
+        const away = competitors.find(c => c.homeAway === "away");
+        const status = ev.status || {};
+        const broadcasts = comp.broadcasts?.flatMap(b => b.names || []) || [];
+        const venue = comp.venue?.fullName || "";
+
+        const leagueLabel = league.toUpperCase()
+          .replace("MENS-COLLEGE-BASKETBALL", "NCAAM")
+          .replace("COLLEGE-FOOTBALL", "NCAAF")
+          .replace("COLLEGE-HOCKEY", "College Hockey")
+          .replace("COLLEGE-BASEBALL", "College Baseball")
+          .replace("USA.1", "MLS");
+
+        allGames.push({
+          espnId: ev.id,
+          name: ev.name || ev.shortName || "",
+          shortName: ev.shortName || "",
+          league: leagueLabel,
+          venue,
+          venueNorm: normVenue(venue),
+          dateTime: ev.date,
+          home: home ? {
+            city: home.team?.abbreviation || "",
+            name: home.team?.displayName || home.team?.shortDisplayName || "",
+            shortName: home.team?.shortDisplayName || "",
+            location: home.team?.location || "",
+            record: home.records?.[0]?.summary || "",
+            logo: home.team?.logo || "",
+            score: parseInt(home.score, 10) || 0,
+          } : null,
+          away: away ? {
+            city: away.team?.abbreviation || "",
+            name: away.team?.displayName || away.team?.shortDisplayName || "",
+            shortName: away.team?.shortDisplayName || "",
+            location: away.team?.location || "",
+            record: away.records?.[0]?.summary || "",
+            logo: away.team?.logo || "",
+            score: parseInt(away.score, 10) || 0,
+          } : null,
+          broadcasts,
+          isLive: status.type?.state === "in",
+          isComplete: status.type?.state === "post",
+          statusText: status.type?.shortDetail || "",
+        });
+      }
+    } catch { /* ESPN is best-effort */ }
+  });
+
+  await Promise.allSettled(fetches);
+  cache.espn[cacheKey] = allGames;
+  return allGames;
+}
+
+/* Map league labels to ESPN URL sport paths */
+const ESPN_SPORT_PATH = {
+  "NBA": "nba", "NHL": "nhl", "NFL": "nfl", "MLB": "mlb", "MLS": "soccer",
+  "NCAAM": "mens-college-basketball", "NCAAF": "college-football",
+  "WNBA": "wnba", "College Baseball": "college-baseball",
+};
+
+/* Check if an ESPN game belongs to a city (home or away) */
+function espnGameInCity(game, cityName) {
+  const keywords = CITY_TEAMS[cityName] || [];
+  if (keywords.length === 0) return null;
+
+  const homeHaystack = [
+    game.home?.name, game.home?.shortName, game.home?.location, game.venue,
+  ].filter(Boolean).join(" ").toLowerCase();
+
+  const awayHaystack = [
+    game.away?.name, game.away?.shortName, game.away?.location,
+  ].filter(Boolean).join(" ").toLowerCase();
+
+  for (const kw of keywords) {
+    if (homeHaystack.includes(kw)) {
+      return { matches: true, isHome: true };
+    }
+  }
+
+  for (const kw of keywords) {
+    if (awayHaystack.includes(kw)) {
+      return { matches: true, isHome: false };
+    }
+  }
+
+  return null;
+}
+
+/* Match a TM/SG event to an ESPN game */
+function findESPNMatch(event, espnGames) {
+  const evName = event.name.toLowerCase();
+
+  for (const game of espnGames) {
+    if (!game.home || !game.away) continue;
+    const homeNames = [game.home.name, game.home.shortName, game.home.city, game.home.location]
+      .map(n => (n || "").toLowerCase()).filter(n => n.length > 2);
+    const awayNames = [game.away.name, game.away.shortName, game.away.city, game.away.location]
+      .map(n => (n || "").toLowerCase()).filter(n => n.length > 2);
+
+    const homeMatch = homeNames.some(n => evName.includes(n));
+    const awayMatch = awayNames.some(n => evName.includes(n));
+    if (homeMatch && awayMatch) return game;
+  }
+
+  for (const game of espnGames) {
+    if (game.venueNorm && event.venueNorm &&
+        game.venueNorm === event.venueNorm &&
+        timeClose(game.dateTime, event.dateTime, 180)) {
+      return game;
+    }
+  }
+  return null;
+}
+
+/* Enrich TM/SG events with ESPN data */
+function enrichWithESPN(events, espnGames) {
+  const matchedESPNIds = new Set();
+
+  const enriched = events.map(event => {
+    const match = findESPNMatch(event, espnGames);
+    if (!match) return event;
+    matchedESPNIds.add(match.espnId);
+
+    const e = { ...event };
+    if (match.home) { e.home = { ...match.home }; e.away = { ...match.away }; }
+    if (match.broadcasts.length > 0) e.broadcast = match.broadcasts;
+    if (match.league) e.sport = match.league;
+
+    if (match.isLive) {
+      e.isLive = true;
+      e.score = { home: match.home.score, away: match.away.score, status: match.statusText };
+    }
+    if (match.isComplete && match.home && match.away) {
+      e.isComplete = true;
+      e.score = { home: match.home.score, away: match.away.score, status: "Final" };
+    }
+    e.espnMatched = true;
+    e.espnId = match.espnId;
+    return e;
+  });
+
+  return { enriched, matchedESPNIds };
+}
+
+/* Create standalone events from ESPN games that weren't matched to any TM/SG event */
+function createESPNOnlyEvents(espnGames, matchedIds, cityName, tz) {
+  const extras = [];
+  for (const game of espnGames) {
+    if (matchedIds.has(game.espnId)) continue;
+    if (!game.home || !game.away) continue;
+    const cityMatch = espnGameInCity(game, cityName);
+    if (!cityMatch) continue;
+
+    const e = {
+      id: `espn-${game.espnId}`,
+      name: game.name,
+      sport: game.league,
+      venue: game.venue,
+      venueNorm: normVenue(game.venue),
+      time: game.dateTime ? formatTime(game.dateTime, tz) : "TBD",
+      dateTime: game.dateTime,
+      ticketUrl: null,
+      source: "espn",
+      isLive: game.isLive,
+      isComplete: game.isComplete,
+      score: null,
+      home: { ...game.home },
+      away: { ...game.away },
+      broadcast: game.broadcasts.length > 0 ? game.broadcasts : null,
+      popularity: game.isLive ? 300 : game.isComplete ? 40 : 80,
+      isAway: !cityMatch.isHome,
+      espnId: game.espnId,
+    };
+
+    if (game.isLive) {
+      e.score = { home: game.home.score, away: game.away.score, status: game.statusText };
+    }
+    if (game.isComplete) {
+      e.score = { home: game.home.score, away: game.away.score, status: "Final" };
+    }
+
+    extras.push(e);
+  }
+  return extras;
+}
+
+/* Apply popularity bonuses and sort: live → upcoming ESPN → other → completed */
+function rankEvents(events) {
+  for (const e of events) {
+    if (e.isLive) {
+      e.popularity += 200;
+    } else if (!e.isComplete && e.espnMatched) {
+      e.popularity += 50;
+    }
+  }
+  events.sort((a, b) => b.popularity - a.popularity);
+  return events;
+}
+
+/* ═══════════════════════════════════════════
+   MAIN DATA HOOK
+   ═══════════════════════════════════════════ */
+function useEvents(city, dateStr) {
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const pollRef = useRef(null);
+
+  const load = useCallback(async (isPolling = false) => {
+    const cacheKey = `${city.name}:${dateStr}`;
+
+    if (!isPolling && cache.events[cacheKey]) {
+      // Re-enrich with fresh ESPN on cached TM/SG data
+      try {
+        if (isPolling) delete cache.espn[`espn-${dateStr}`];
+        const espn = await fetchAllESPN(dateStr);
+        const { enriched, matchedESPNIds } = enrichWithESPN(cache.events[cacheKey], espn);
+        const extras = createESPNOnlyEvents(espn, matchedESPNIds, city.name, city.tz);
+        const all = rankEvents([...enriched, ...extras]);
+        setEvents(all);
+      } catch {
+        setEvents(cache.events[cacheKey]);
+      }
+      setLoading(false);
+      return;
+    }
+
+    if (!isPolling) setLoading(true);
+    setError(null);
+
+    try {
+      const [tmEventsRaw, sgEvents] = await Promise.all([
+        fetchTM(city, dateStr).catch(err => { throw err; }),
+        fetchSG(city, dateStr).catch(() => []),
+      ]);
+
+      const tmEvents = tmEventsRaw.filter(e =>
+        !e.venueState || e.venueState === city.state
+      );
+
+      const merged = dedup(tmEvents, sgEvents);
+      cache.events[cacheKey] = merged;
+
+      let final = merged;
+      try {
+        if (isPolling) delete cache.espn[`espn-${dateStr}`];
+        const espn = await fetchAllESPN(dateStr);
+        const { enriched, matchedESPNIds } = enrichWithESPN(merged, espn);
+        const extras = createESPNOnlyEvents(espn, matchedESPNIds, city.name, city.tz);
+        final = [...enriched, ...extras];
+      } catch { /* ESPN failed, still show events */ }
+
+      rankEvents(final);
+      setEvents(final);
+    } catch (err) {
+      if (!isPolling) {
+        setError(err.message);
+        setEvents([]);
+      }
+    } finally {
+      if (!isPolling) setLoading(false);
+    }
+  }, [city, dateStr]);
+
+  useEffect(() => { load(false); }, [load]);
+
+  // Poll every 60s if any events are live
+  useEffect(() => {
+    const hasLive = events.some(e => e.isLive);
+    if (hasLive && !pollRef.current) {
+      pollRef.current = setInterval(() => load(true), 60000);
+    } else if (!hasLive && pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+  }, [events, load]);
+
+  return { events, loading, error, retry: () => load(false) };
+}
+
+/* ═══════════════════════════════════════════
+   UI COMPONENTS
+   ═══════════════════════════════════════════ */
+
+function LiveDot() {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+      <span style={{
+        width: 6, height: 6, borderRadius: "50%", background: "#c0392b",
+        boxShadow: "0 0 0 3px rgba(192,57,43,0.15)",
+        animation: "pulse 2s ease infinite",
+      }}/>
+      <span style={{
+        fontSize: 10, fontWeight: 700, letterSpacing: "0.1em",
+        color: "#c0392b", textTransform: "uppercase",
+        fontFamily: "'IBM Plex Sans', sans-serif",
+      }}>Live</span>
+    </span>
+  );
+}
+
+function FinalBadge() {
+  return (
+    <span style={{
+      fontSize: 10, fontWeight: 600, letterSpacing: "0.08em",
+      color: "#8c8578", textTransform: "uppercase",
+      fontFamily: "'IBM Plex Sans', sans-serif",
+    }}>Final</span>
+  );
+}
+
+function ScoreBlock({ event }) {
+  if (!event.score || !event.home || !event.away) return null;
+  const isFinal = event.isComplete;
+  const espnPath = ESPN_SPORT_PATH[event.sport];
+  const espnUrl = event.espnId && espnPath
+    ? `https://www.espn.com/${espnPath}/game/_/gameId/${event.espnId}`
+    : null;
+
+  const block = (
+    <div style={{
+      display: "inline-flex", alignItems: "stretch",
+      fontFamily: "'IBM Plex Sans', sans-serif",
+      borderRadius: 6, overflow: "hidden", border: "1px solid #e8e4de",
+    }}>
+      <div style={{
+        display: "flex", alignItems: "center",
+        background: "#f7f5f0", padding: "8px 14px", gap: 10, minWidth: 90,
+      }}>
+        {event.home.logo && <img src={event.home.logo} alt="" style={{ width: 18, height: 18, objectFit: "contain" }}/>}
+        <span style={{ fontSize: 13, fontWeight: 600, color: "#1a1714" }}>{event.home.city}</span>
+        <span style={{ fontSize: 22, fontWeight: 700, color: "#1a1714", lineHeight: 1 }}>{event.score.home}</span>
+      </div>
+      <div style={{
+        display: "flex", alignItems: "center",
+        background: "#f7f5f0", padding: "8px 14px", gap: 10, minWidth: 90,
+        borderLeft: "1px solid #e8e4de",
+      }}>
+        {event.away.logo && <img src={event.away.logo} alt="" style={{ width: 18, height: 18, objectFit: "contain" }}/>}
+        <span style={{ fontSize: 13, fontWeight: 600, color: "#1a1714" }}>{event.away.city}</span>
+        <span style={{ fontSize: 22, fontWeight: 700, color: "#1a1714", lineHeight: 1 }}>{event.score.away}</span>
+      </div>
+      <div style={{
+        background: "#f7f5f0", padding: "8px 12px",
+        borderLeft: "1px solid #e8e4de",
+        display: "flex", alignItems: "center",
+      }}>
+        <span style={{
+          fontSize: 11, fontWeight: 500,
+          color: isFinal ? "#8c8578" : "#c0392b",
+        }}>{event.score.status}</span>
+      </div>
+    </div>
+  );
+
+  if (espnUrl) {
+    return (
+      <a href={espnUrl} target="_blank" rel="noopener noreferrer"
+        style={{ display: "inline-flex", margin: "12px 0 4px", textDecoration: "none", transition: "opacity 0.15s" }}
+        onMouseEnter={e => e.currentTarget.style.opacity = "0.7"}
+        onMouseLeave={e => e.currentTarget.style.opacity = "1"}
+      >{block}</a>
+    );
+  }
+
+  return <div style={{ margin: "12px 0 4px" }}>{block}</div>;
+}
+
+function EventRow({ event, isFirst, isLast }) {
+  const hasTeams = event.home && event.away;
+  const dimmed = event.isComplete || event.isStarted;
+  const showRecords = hasTeams && event.home.record && !event.isLive && !event.isComplete && !event.isStarted;
+  const isLive = event.isLive;
+  return (
+    <div style={{
+      ...(isLive
+        ? {
+            border: "1px solid rgba(192, 57, 43, 0.15)",
+            borderRadius: 8,
+            background: "rgba(192, 57, 43, 0.03)",
+            padding: 16,
+            marginTop: isFirst ? 20 : 12,
+            marginBottom: isLast ? 0 : 12,
+          }
+        : {
+            borderBottom: isLast ? "none" : "1px solid #e8e4de",
+            padding: "20px 0",
+          }),
+    }}>
+      {/* Meta */}
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        marginBottom: 8,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{
+            fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 11,
+            fontWeight: 600, color: "#8c8578", letterSpacing: "0.04em",
+          }}>{event.sport}</span>
+          {event.isAway && (
+            <span style={{
+              fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 11,
+              fontWeight: 600, color: "#b0a898", letterSpacing: "0.04em",
+            }}>Away</span>
+          )}
+          {!isLive && event.isComplete && <FinalBadge />}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {isLive && <LiveDot />}
+          <span style={{
+            fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 11,
+            color: event.isStarted ? "#b0a898" : "#8c8578", fontWeight: 400, letterSpacing: "0.02em",
+          }}>
+            {event.isStarted ? `Started at ${event.time}` : event.time}
+          </span>
+        </div>
+      </div>
+
+      {/* Name with logos */}
+      <h3 style={{
+        fontFamily: "'Source Serif 4', Georgia, serif",
+        fontSize: 21,
+        fontWeight: 600, color: dimmed ? "#6b6259" : "#1a1714",
+        lineHeight: 1.25, margin: 0, letterSpacing: "-0.01em",
+        display: "flex", alignItems: "center", gap: 10,
+      }}>
+        {!isLive && hasTeams && event.home.logo && (
+          <span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+            <img src={event.away.logo} alt="" style={{
+              width: 22, height: 22, objectFit: "contain",
+              opacity: dimmed ? 0.6 : 1,
+            }}/>
+            <span style={{ color: "#ccc8c0", fontSize: 14, fontWeight: 400, fontFamily: "'IBM Plex Sans', sans-serif" }}>@</span>
+            <img src={event.home.logo} alt="" style={{
+              width: 22, height: 22, objectFit: "contain",
+              opacity: dimmed ? 0.6 : 1,
+            }}/>
+          </span>
+        )}
+        <span>{event.name}</span>
+      </h3>
+
+      {/* Records */}
+      {showRecords && (
+        <p style={{
+          fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 13,
+          color: "#8c8578", marginTop: 4, lineHeight: 1.4,
+        }}>
+          {event.home.name} ({event.home.record}) vs {event.away.name} ({event.away.record})
+        </p>
+      )}
+
+      {/* Score */}
+      {(event.isLive || event.isComplete) && <ScoreBlock event={event} />}
+
+      {/* Footer */}
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        marginTop: 10, flexWrap: "wrap", gap: 6,
+      }}>
+        <div style={{
+          fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 12.5,
+          color: "#8c8578", display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap",
+        }}>
+          <span>{event.venue}</span>
+          {event.broadcast && event.broadcast.length > 0 && (
+            <>
+              <span style={{ color: "#ccc8c0", margin: "0 2px" }}>·</span>
+              <span>{event.broadcast.join(", ")}</span>
+            </>
+          )}
+          {event.source === "sg" && (
+            <>
+              <span style={{ color: "#ccc8c0", margin: "0 2px" }}>·</span>
+              <span style={{ fontSize: 10, color: "#b0a898" }}>via SeatGeek</span>
+            </>
+          )}
+        </div>
+        {event.ticketUrl && (
+          <a href={event.ticketUrl} target="_blank" rel="noopener noreferrer"
+            style={{
+              fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 12,
+              fontWeight: 600, color: "#1a1714", textDecoration: "none",
+              borderBottom: "1.5px solid #1a1714", paddingBottom: 1,
+              transition: "opacity 0.15s", lineHeight: 1,
+            }}
+            onMouseEnter={e => e.target.style.opacity = "0.5"}
+            onMouseLeave={e => e.target.style.opacity = "1"}
+          >Tickets ↗</a>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Skeleton() {
+  return (
+    <div>
+      {[0, 1, 2].map(i => (
+        <div key={i} style={{
+          borderBottom: i < 2 ? "1px solid #e8e4de" : "none",
+          padding: "20px 0",
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+            <div style={{ height: 12, width: 45, background: "#ece8e0", borderRadius: 3 }}/>
+            <div style={{ height: 12, width: 55, background: "#ece8e0", borderRadius: 3 }}/>
+          </div>
+          <div style={{ height: 20, width: "75%", background: "#ece8e0", borderRadius: 3, marginBottom: 8 }}/>
+          <div style={{ height: 13, width: "50%", background: "#f0ece5", borderRadius: 3, marginBottom: 10 }}/>
+          <div style={{ display: "flex", justifyContent: "space-between" }}>
+            <div style={{ height: 12, width: "40%", background: "#f0ece5", borderRadius: 3 }}/>
+            <div style={{ height: 12, width: 55, background: "#ece8e0", borderRadius: 3 }}/>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   MAIN APP
+   ═══════════════════════════════════════════ */
+export default function SportsToday() {
+  const [city, setCity] = useState(CITIES[0]);
+  const [cityOpen, setCityOpen] = useState(false);
+  const dates = getDateOptions();
+  const [activeDate, setActiveDate] = useState(dates[0].key);
+  const activeDateObj = dates.find(d => d.key === activeDate);
+  const dropdownRef = useRef(null);
+  const dateStripRef = useRef(null);
+  const [showScrollArrow, setShowScrollArrow] = useState(true);
+  const [showLeftArrow, setShowLeftArrow] = useState(false);
+
+  const checkScrollEnd = useCallback(() => {
+    const el = dateStripRef.current;
+    if (!el) return;
+    setShowScrollArrow(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+    setShowLeftArrow(el.scrollLeft > 2);
+  }, []);
+
+  const { events, loading, error, retry } = useEvents(city, activeDate);
+  const liveCount = events.filter(e => e.isLive).length;
+
+  const now = Date.now();
+  const sortedEvents = [...events].map(e => {
+    if (!e.espnMatched && !e.isLive && !e.isComplete && e.dateTime && new Date(e.dateTime).getTime() < now) {
+      return { ...e, isStarted: true };
+    }
+    return e;
+  }).sort((a, b) => {
+    // Group: live (0), upcoming (1), started (2), completed (3)
+    const groupA = a.isLive ? 0 : a.isComplete ? 3 : a.isStarted ? 2 : 1;
+    const groupB = b.isLive ? 0 : b.isComplete ? 3 : b.isStarted ? 2 : 1;
+    if (groupA !== groupB) return groupA - groupB;
+    const tA = a.dateTime ? new Date(a.dateTime).getTime() : Infinity;
+    const tB = b.dateTime ? new Date(b.dateTime).getTime() : Infinity;
+    return tA - tB;
+  });
+
+  return (
+    <div style={{
+      minHeight: "100vh", background: "#faf8f4",
+      fontFamily: "'IBM Plex Sans', sans-serif",
+    }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&display=swap');
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: #faf8f4; -webkit-font-smoothing: antialiased; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        ::selection { background: #1a1714; color: #faf8f4; }
+        .date-strip::-webkit-scrollbar { display: none; }
+      `}</style>
+
+      <div style={{ maxWidth: 560, margin: "0 auto", padding: "0 24px" }}>
+
+        {/* Header */}
+        <header style={{ paddingTop: 52, paddingBottom: 0 }}>
+          {/* Combined header */}
+          <div style={{
+            display: "flex", alignItems: "baseline", justifyContent: "space-between",
+            flexWrap: "wrap", gap: 8, marginBottom: 28,
+          }}>
+            <h1 style={{
+              fontFamily: "'Source Serif 4', Georgia, serif",
+              fontSize: 26, fontWeight: 700, color: "#1a1714",
+              letterSpacing: "-0.02em", lineHeight: 1.3, margin: 0,
+              display: "inline",
+            }}>
+              Sports{activeDateObj?.key === dates[0].key
+                ? " Today "
+                : <>{" "}<span style={{ fontWeight: 400, fontStyle: "italic", color: "#8c8578" }}>on</span>{" "}{activeDateObj?.dateLabel}{" "}</>
+              }
+              <span style={{ fontWeight: 400, fontStyle: "italic", color: "#8c8578" }}>in</span>{" "}
+              <span style={{ position: "relative" }} ref={dropdownRef}>
+                <button onClick={() => setCityOpen(!cityOpen)} style={{
+                  fontFamily: "'Source Serif 4', Georgia, serif",
+                  fontSize: 26, fontWeight: 700, color: "#1a1714",
+                  background: "none", border: "none", cursor: "pointer",
+                  borderBottom: "1.5px dashed #b0a898", padding: "0 2px 2px",
+                  lineHeight: 1.2, display: "inline-flex", alignItems: "baseline", gap: 5,
+                  letterSpacing: "-0.02em",
+                }}>
+                  {city.name}
+                  <svg width="10" height="10" viewBox="0 0 12 12" fill="none" style={{
+                    transform: cityOpen ? "rotate(180deg)" : "rotate(0)",
+                    transition: "transform 0.2s ease", position: "relative", top: -1,
+                  }}>
+                    <path d="M2.5 4.5L6 8L9.5 4.5" stroke="#8c8578" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </button>
+
+                {cityOpen && (
+                  <>
+                    <div onClick={() => setCityOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 90 }} />
+                    <div style={{
+                      position: "absolute", top: "calc(100% + 8px)", left: -8,
+                      background: "#fff", border: "1px solid #e8e4de",
+                      borderRadius: 8, padding: 4, zIndex: 100,
+                      boxShadow: "0 8px 30px rgba(26,23,20,0.1), 0 2px 8px rgba(26,23,20,0.06)",
+                      minWidth: 200, animation: "fadeIn 0.12s ease",
+                    }}>
+                      {CITIES.map(c => (
+                        <button key={c.name} onClick={() => { setCity(c); setCityOpen(false); }}
+                          style={{
+                            display: "block", width: "100%", textAlign: "left",
+                            padding: "9px 14px", border: "none", borderRadius: 5,
+                            background: c.name === city.name ? "#f4f1eb" : "transparent",
+                            color: "#1a1714",
+                            fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 14,
+                            fontWeight: c.name === city.name ? 600 : 400,
+                            cursor: "pointer", transition: "background 0.1s",
+                          }}
+                          onMouseEnter={e => { if (c.name !== city.name) e.target.style.background = "#faf8f4"; }}
+                          onMouseLeave={e => { if (c.name !== city.name) e.target.style.background = "transparent"; }}
+                        >{c.name}</button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </span>
+            </h1>
+            {liveCount > 0 && (
+              <span style={{
+                fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 11,
+                color: "#c0392b", fontWeight: 500,
+              }}>
+                {liveCount} live now
+              </span>
+            )}
+          </div>
+
+          {/* Date strip */}
+          <div style={{ position: "relative", marginBottom: 24 }}>
+            <div ref={dateStripRef} onScroll={checkScrollEnd} style={{
+              display: "flex", gap: 2,
+              borderBottom: "1px solid #e8e4de", paddingBottom: 0,
+              paddingLeft: 32, paddingRight: 32,
+              overflowX: "auto", scrollbarWidth: "none",
+              WebkitOverflowScrolling: "touch",
+            }} className="date-strip">
+              {dates.map(d => {
+                const active = d.key === activeDate;
+                return (
+                  <button key={d.key} onClick={() => setActiveDate(d.key)} style={{
+                    flex: "0 0 auto", minWidth: 50, padding: "10px 4px 12px", border: "none",
+                    borderBottom: active ? "2px solid #1a1714" : "2px solid transparent",
+                    background: "transparent", cursor: "pointer",
+                    display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
+                    marginBottom: -1, transition: "border-color 0.15s",
+                  }}>
+                    <span style={{
+                      fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 9.5,
+                      fontWeight: 600, letterSpacing: "0.08em",
+                      color: active ? "#1a1714" : "#b0a898",
+                      transition: "color 0.15s",
+                    }}>{d.weekday}</span>
+                    <span style={{
+                      fontFamily: "'Source Serif 4', Georgia, serif",
+                      fontSize: 18, fontWeight: 600,
+                      color: active ? "#1a1714" : "#b0a898",
+                      transition: "color 0.15s", lineHeight: 1.1,
+                    }}>{d.dayNum}</span>
+                  </button>
+                );
+              })}
+            </div>
+            {showLeftArrow && (
+              <div style={{
+                position: "absolute", top: 0, left: 0, bottom: 1,
+                width: 32, pointerEvents: "none",
+                background: "linear-gradient(to left, transparent, #faf8f4)",
+                zIndex: 1,
+              }}/>
+            )}
+            {showLeftArrow && (
+              <button onClick={() => dateStripRef.current?.scrollBy({ left: -300, behavior: "smooth" })}
+                style={{
+                  position: "absolute", left: 0, top: "50%", transform: "translateY(-50%)",
+                  width: 28, height: 28, border: "none", background: "transparent",
+                  color: "#b0a898", fontSize: 14, cursor: "pointer", padding: 0,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  zIndex: 2,
+                }}
+                aria-label="Scroll dates left"
+              >‹</button>
+            )}
+            {showScrollArrow && (
+              <div style={{
+                position: "absolute", top: 0, right: 0, bottom: 1,
+                width: 32, pointerEvents: "none",
+                background: "linear-gradient(to right, transparent, #faf8f4)",
+                zIndex: 1,
+              }}/>
+            )}
+            {showScrollArrow && (
+              <button onClick={() => dateStripRef.current?.scrollBy({ left: 300, behavior: "smooth" })}
+                style={{
+                  position: "absolute", right: 0, top: "50%", transform: "translateY(-50%)",
+                  width: 28, height: 28, border: "none", background: "transparent",
+                  color: "#b0a898", fontSize: 14, cursor: "pointer", padding: 0,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  zIndex: 2,
+                }}
+                aria-label="Scroll dates right"
+              >›</button>
+            )}
+          </div>
+        </header>
+
+        {/* Events */}
+        <main style={{ borderTop: "2px solid #1a1714" }}>
+          {loading ? (
+            <Skeleton />
+          ) : error ? (
+            <div style={{ padding: "40px 0", textAlign: "center" }}>
+              <p style={{
+                fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 12,
+                color: "#c0392b", marginBottom: 8,
+              }}>
+                Couldn't load events
+              </p>
+              <p style={{ fontSize: 12, color: "#b0a898", lineHeight: 1.5, marginBottom: 14 }}>
+                {error.includes("401") || error.includes("403")
+                  ? "Check your Ticketmaster API key"
+                  : "Check your connection and try again"}
+              </p>
+              <button onClick={retry} style={{
+                padding: "8px 18px", border: "1px solid #e8e4de",
+                borderRadius: 6, background: "transparent", cursor: "pointer",
+                fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 13,
+                fontWeight: 600, color: "#1a1714",
+              }}>Retry</button>
+            </div>
+          ) : sortedEvents.length > 0 ? (
+            <div style={{ animation: "fadeIn 0.3s ease" }}>
+              {sortedEvents.map((event, i) => (
+                <EventRow key={event.id} event={event} isFirst={i === 0} isLast={i === sortedEvents.length - 1} />
+              ))}
+            </div>
+          ) : (
+            <div style={{ padding: "56px 0", textAlign: "center" }}>
+              <p style={{
+                fontFamily: "'Source Serif 4', Georgia, serif",
+                fontSize: 18, fontStyle: "italic", color: "#b0a898",
+                lineHeight: 1.5,
+              }}>
+                No events scheduled
+              </p>
+              <p style={{ fontSize: 13, color: "#ccc8c0", marginTop: 6 }}>
+                Try another date or city
+              </p>
+            </div>
+          )}
+        </main>
+
+        {/* Footer */}
+        <footer style={{
+          padding: "28px 0 48px",
+          borderTop: "1px solid #e8e4de", marginTop: 8,
+        }}>
+          <p style={{
+            fontFamily: "'IBM Plex Sans', sans-serif",
+            fontSize: 10, color: "#ccc8c0", lineHeight: 1.7,
+            letterSpacing: "0.02em",
+          }}>
+            Ticketmaster · SeatGeek · ESPN<br/>
+            Scores refresh every 60s during live games
+          </p>
+        </footer>
+      </div>
+    </div>
+  );
+}
