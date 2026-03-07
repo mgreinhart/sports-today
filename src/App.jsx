@@ -678,7 +678,7 @@ function EventCard({ event }) {
       padding: "14px 16px",
       display: "flex", flexDirection: "column", gap: 10,
       transition: "box-shadow 0.15s",
-      minHeight: 0,
+      minWidth: 0, overflow: "hidden",
     }}
       onMouseEnter={e => e.currentTarget.style.boxShadow = "0 2px 12px rgba(26,23,20,0.06)"}
       onMouseLeave={e => e.currentTarget.style.boxShadow = "none"}
@@ -911,6 +911,7 @@ export default function SportsToday() {
     <div style={{
       minHeight: "100vh", background: "#faf8f4",
       fontFamily: "'IBM Plex Sans', sans-serif",
+      overflowX: "hidden",
     }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&display=swap');
@@ -925,7 +926,7 @@ export default function SportsToday() {
         }
       `}</style>
 
-      <div style={{ maxWidth: 560, margin: "0 auto", padding: "0 24px" }}>
+      <div style={{ maxWidth: 560, margin: "0 auto", padding: "0 20px", width: "100%" }}>
 
         {/* Header */}
         <header style={{ paddingTop: 52, paddingBottom: 0 }}>
@@ -1008,7 +1009,7 @@ export default function SportsToday() {
             <div ref={dateStripRef} onScroll={checkScrollEnd} style={{
               display: "flex", gap: 2,
               borderBottom: "1px solid #e8e4de", paddingBottom: 0,
-              paddingLeft: 32, paddingRight: 32,
+              paddingLeft: 0, paddingRight: 0,
               overflowX: "auto", scrollbarWidth: "none",
               WebkitOverflowScrolling: "touch",
             }} className="date-strip">
