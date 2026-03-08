@@ -288,6 +288,78 @@ function inferSport(name, tmSport) {
 }
 
 /* ═══════════════════════════════════════════
+   COLLEGE SPORTS WORKER
+   ═══════════════════════════════════════════ */
+const CITY_SLUGS = {
+  "Los Angeles": "los-angeles",
+};
+
+async function fetchCollegeSports(city, dateStr) {
+  const slug = CITY_SLUGS[city.name];
+  if (!slug) return [];
+  try {
+    const res = await fetch(`https://college-sports-api.mgreinhart.workers.dev/events?city=${slug}&date=${dateStr}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (!data.events) return [];
+    return data.events.map(e => {
+      const nameHasSchool = e.school && e.name && e.name.toLowerCase().includes(e.school.toLowerCase());
+      const displayName = nameHasSchool ? e.name : `${e.school || ""}${e.mascot ? " " + e.mascot : ""} ${e.sport || ""}`.trim();
+      const dt = e.dateStr && e.timeStr
+        ? `${e.dateStr}T${e.timeStr}`
+        : e.dateStr ? `${e.dateStr}T00:00:00` : null;
+      return {
+        id: `college-${e.school}-${e.sport}-${e.dateStr}`.replace(/\s+/g, "-"),
+        name: e.name || displayName,
+        sport: e.sport || "Sports",
+        venue: e.venue || "",
+        venueNorm: normVenue(e.venue || ""),
+        time: e.timeStr || "TBD",
+        dateTime: dt,
+        ticketUrl: e.url || null,
+        source: "college",
+        isLive: false,
+        isComplete: false,
+        score: null,
+        home: null,
+        away: null,
+        broadcast: null,
+        popularity: 70,
+        _school: e.school || "",
+        _sport: e.sport || "",
+        _dateStr: e.dateStr || dateStr,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+/* Deduplicate college events against TM and ESPN events */
+function dedupCollege(collegeEvents, tmSgEvents, espnGames) {
+  return collegeEvents.filter(ce => {
+    const school = ce._school.toLowerCase();
+    const sport = ce._sport.toLowerCase();
+    const date = ce._dateStr;
+    // Check TM/SG events
+    const inTmSg = tmSgEvents.some(ev => {
+      const evName = ev.name.toLowerCase();
+      return evName.includes(school) && ev.dateTime && ev.dateTime.startsWith(date);
+    });
+    if (inTmSg) return false;
+    // Check ESPN games
+    const inEspn = espnGames.some(g => {
+      const names = [g.home?.name, g.home?.shortName, g.home?.location,
+                     g.away?.name, g.away?.shortName, g.away?.location]
+        .filter(Boolean).join(" ").toLowerCase();
+      const espnDate = g.dateTime ? g.dateTime.slice(0, 10) : "";
+      return names.includes(school) && espnDate === date;
+    });
+    return !inEspn;
+  });
+}
+
+/* ═══════════════════════════════════════════
    ESPN
    ═══════════════════════════════════════════ */
 async function fetchAllESPN(dateStr) {
@@ -572,9 +644,10 @@ function useEvents(city, dateStr) {
     setError(null);
 
     try {
-      const [tmEventsRaw, sgEvents] = await Promise.all([
+      const [tmEventsRaw, sgEvents, collegeEvents] = await Promise.all([
         fetchTM(city, dateStr).catch(err => { throw err; }),
         fetchSG(city, dateStr).catch(() => []),
+        fetchCollegeSports(city, dateStr).catch(() => []),
       ]);
 
       const tmEvents = tmEventsRaw.filter(e =>
@@ -590,8 +663,13 @@ function useEvents(city, dateStr) {
         const espn = await fetchAllESPN(dateStr);
         const { enriched, matchedESPNIds } = enrichWithESPN(merged, espn);
         const extras = createESPNOnlyEvents(espn, matchedESPNIds, city.name, city.tz);
-        final = [...enriched, ...extras];
-      } catch { /* ESPN failed, still show events */ }
+        const dedupedCollege = dedupCollege(collegeEvents, merged, espn);
+        final = [...enriched, ...extras, ...dedupedCollege];
+      } catch {
+        /* ESPN failed, still show events with college */
+        const dedupedCollege = dedupCollege(collegeEvents, merged, []);
+        final = [...merged, ...dedupedCollege];
+      }
 
       rankEvents(final);
       setEvents(final);
